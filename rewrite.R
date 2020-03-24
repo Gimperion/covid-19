@@ -1,8 +1,23 @@
 options(stringsAsFactors=FALSE)
 library(dplyr)
-library(tomkit)
+library(reshape2)
 
+# borrowed functions from tomkit
+cleanNames <- function(x){
+	names(x) <- names(x) %>%
+		iconv("UTF-8", "UTF-8", sub="") %>%
+		gsub(pattern="\\.", replacement=" ") %>%
+		trimall() %>%
+		gsub(pattern=" +", replacement="_") %>%
+		tolower()
+	return(x)
+}
 
+trimall <- function(tstring){
+	return(gsub("(^ +)|( +$)", "", tstring))
+}
+
+# Data Processing Functions
 getDifference <- function(x){
 	c(x[1:(length(x)-1)] - x[2:length(x)], 0)
 }
@@ -13,73 +28,55 @@ getStatus<- function(x){
 		gsub(pattern="\\.csv", replacement="")
 }
 
-raw <- list.files("raw", full.names = TRUE) %>%
-	lapply(function(x){
-		read.csv(x) %>%
-			cleanNames() %>%
-			mutate(
-				date = as.Date(date, "%m/%d/%Y"),
-				status = getStatus(x)
-			)
-	}) %>%
-	bind_rows() %>%
-	group_by(
-		country_region, status, date
-	) %>%
-	summarize(
-		value = sum(value)
-	) %>%
-	ungroup()
+readData <- function(path){
+	read.csv(path) %>%
+		cleanNames() %>%
+		mutate(
+			date = as.Date(date, "%m/%d/%Y"),
+			status = getStatus(path)
+		)
+}
 
-global_data <- raw %>%
-	group_by(status, date) %>%
-	summarize(
-		value = sum(value)
-	) %>%
-	ungroup() %>%
-	mutate(
-		country_region = "Global"
-	) %>%
-	select(country_region, date, status, value) %>%
-	list(raw) %>%
-	bind_rows() %>%
-	arrange(-as.numeric(date), status)
+collapseProvinceState <- function(dat){
+	dat %>%
+		group_by(country_region, status, date) %>%
+		summarize(value = sum(value)) %>%
+		ungroup()
+}
 
-active <- global_data  %>%
-	mutate(
-		blah = sprintf("%s-%s", country_region, as.character(date))
-	) %>%
-	split(.$blah) %>%
-	lapply(function(x){
-		x <- x %>% arrange(status)
-		data.frame(
-			country_region = x$country_region[1],
-			date = x$date[1],
-			status = "Active",
-			value = x$value[1] - (x$value[2] + x$value[3]),
-			blah = x$blah[1]
-		) %>%
-		list(x) %>%
-		bind_rows()
-	}) %>%
-	bind_rows() %>%
-	select(-blah) %>%
-	split(.$status) %>%
-	lapply(function(x){
-		x %>%
-			split(.$country_region) %>%
-			lapply(function(country_chunk){
-				country_chunk %>%
-					arrange(-as.numeric(date)) %>%
-					mutate(
-						diff = getDifference(value)
-					)
-			}) %>%
-			bind_rows()
-	}) %>%
-	bind_rows()
+appendGlobal <- function(dat){
+	## calculates global and appends to data
+	dat %>%
+		group_by(status, date) %>%
+		summarize(value = sum(value)) %>%
+		ungroup() %>%
+		mutate( country_region = "Global") %>%
+		select(country_region, date, status, value) %>%
+		rbind(dat)
+}
 
-#
-# us <- subset(active, country_region == 'US') %>%
-# 	unique() %>%
-# 	tail(n=50)
+createActive <- function(dat){
+	dcast(country_region + date ~ status,
+		data=dat, value.var="value") %>%
+		mutate(Active = Confirmed - (Deaths + Recovered))
+}
+
+calcDiffs <- function(dat){
+	dat %>%
+		mutate(
+			confirmed_diff = getDifference(confirmed),
+			deaths_diff = getDifference(deaths),
+			recovcered_diff = getDifference(recovered),
+			active_diff = getDifference(active)
+		)
+}
+
+## Run the code!
+global <- list.files("raw", full.names = TRUE) %>%
+	lapply(readData) %>%
+	bind_rows() %>%
+	collapseProvinceState() %>%
+	appendGlobal() %>%
+	createActive() %>%
+	cleanNames() %>%
+	calcDiffs()
