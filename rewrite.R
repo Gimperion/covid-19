@@ -28,13 +28,16 @@ getStatus<- function(x){
 		gsub(pattern="\\.csv", replacement="")
 }
 
-readData <- function(path){
-	read.csv(path) %>%
-		cleanNames() %>%
-		mutate(
-			date = as.Date(date, "%m/%d/%Y"),
-			status = getStatus(path)
-		)
+readData <- function(paths){
+	lapply(paths, function(path){
+		read.csv(path) %>%
+			cleanNames() %>%
+			mutate(
+				date = as.Date(date, "%m/%d/%Y"),
+				status = getStatus(path)
+			)
+	}) %>%
+		bind_rows()
 }
 
 collapseProvinceState <- function(dat){
@@ -68,15 +71,14 @@ calcDiffs <- function(dat){
 			deaths_diff = getDifference(deaths),
 			recovcered_diff = getDifference(recovered),
 			active_diff = getDifference(active)
-		)
+		) %>%
+		cleanNames()
 }
 
 ## Run the code!
 global <- list.files("raw", full.names = TRUE) %>%
-	lapply(readData) %>%
-	bind_rows() %>%
+	readData() %>%
 	collapseProvinceState() %>%
 	appendGlobal() %>%
-	createActive() %>%
-	cleanNames() %>%
+	createActive()  %>%
 	calcDiffs()
