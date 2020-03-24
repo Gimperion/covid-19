@@ -61,18 +61,22 @@ appendGlobal <- function(dat){
 createActive <- function(dat){
 	dcast(country_region + date ~ status,
 		data=dat, value.var="value") %>%
-		mutate(Active = Confirmed - (Deaths + Recovered))
+		mutate(Active = Confirmed - (Deaths + Recovered)) %>%
+		cleanNames()
 }
 
 calcDiffs <- function(dat){
 	dat %>%
-		mutate(
-			confirmed_diff = getDifference(confirmed),
-			deaths_diff = getDifference(deaths),
-			recovcered_diff = getDifference(recovered),
-			active_diff = getDifference(active)
-		) %>%
-		cleanNames()
+		split(.$country_region) %>%
+		lapply(function(x){
+			mutate(
+				confirmed_diff = getDifference(confirmed),
+				deaths_diff = getDifference(deaths),
+				recovcered_diff = getDifference(recovered),
+				active_diff = getDifference(active)
+			)
+		}) %>%
+		bind_rows()
 }
 
 ## Run the code!
@@ -80,5 +84,5 @@ global <- list.files("raw", full.names = TRUE) %>%
 	readData() %>%
 	collapseProvinceState() %>%
 	appendGlobal() %>%
-	createActive()  %>%
+	createActive() %>%
 	calcDiffs()
