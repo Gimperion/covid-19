@@ -1,0 +1,441 @@
+---
+title: "Covid-19 Data Analysis"
+author: "Alexander Kahanek"
+date: "3/22/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+gathered from
+https://data.humdata.org/dataset/novel-coronavirus-2019-ncov-cases
+
+Data is cummulative
+
+```{r, echo = FALSE}
+library(plyr)
+library(ggplot2)
+library(tidyverse)
+library(scales)
+library(plotly)
+
+#Function for adding a row for each specific date value, then taking those new rows...
+combine_dates <- function(data, status, country){
+  data = data[,c("Status", "Value", "Date", "Keep", "Country")]
+  for (d in unique(data$Date)){
+    #sum dates
+    count = sum(data[data$Date == d,"Value"])
+  
+    #add rows for total dates
+    data = rbind(data, list(status,count, d, "y", country))
+  }
+  #grab rows where we keep, and the cols we want
+  data = data[data$Keep == "y",c("Status", "Value", "Date", "Country")]
+  return (data) #send back
+}
+
+#comining 3 datasets
+combine_3 <- function(x,y,z){
+  data = rbind(x,y)
+  data = rbind(data,z)
+  return (data)
+}
+
+#Function for seperating countries into a specific dataframe, function all combines all dates for us
+seperate_country <- function(country, df_c, df_r, df_d){
+  
+  #taking countries
+  df1 = df_c[df_c[,"Country.Region"]== country,]
+  df2 = df_r[df_r[,"Country.Region"]== country,]
+  df3 = df_d[df_d[,"Country.Region"]== country,]
+  
+  #Adding Country row, to rename
+  df1$Country = country
+  df2$Country = country
+  df3$Country = country
+  
+  #calling function on confirmed to combine dates
+  df1 = combine_dates(df1,"Confirmed", country)
+  df2 = combine_dates(df2,"Recovered", country)
+  df3 = combine_dates(df3,"Deceased", country)
+  
+  #calling function to combine all 3 datasets
+  data = combine_3(df1, df2, df3)
+  
+  #Changing dates from strings to dates
+  data$Date = as.Date(data$Date, "%m/%d/%Y")
+  
+  return(data)
+}
+
+
+#Function used for taking merged dataframe, and extracting the data based on status
+extract_status <- function(data, status){
+  data = data[data$Status == status, names(data)]
+}
+
+#Function for converting Cummulative day to per day
+cummulative_to_per <- function(data, cumm_column, p_d_column, status){
+  
+  #get status sent(need to get efficient ordering)
+  data = extract_status(data, status)
+  
+  #reverse order of dates
+  data = data[rev(order(as.Date(data$Date, format   = "%Y-%m-%d"))),]
+  
+  data[p_d_column] = 0 #set new column to 0
+  
+  previous_total = 0 #start at 0
+  for (d in data$Date){
+    
+    #get current total, will be lowest to highest
+    total = data[data$Date == d, "Value"]
+    
+    #formula for a current day
+    per_day = previous_total - total
+    
+    #Grabbing the change rate
+    rate_change = (per_day/previous_total)
+    
+    if (previous_total == 0){
+      rate_change = NA
+    }
+    
+    #reset previous total to loop  
+    previous_total = total
+    
+    if (per_day == max(data$Value)*-1){
+      per_day = NA #this value is unkown
+    }
+    
+    #assign column value
+    data[data$Date == d, p_d_column] = per_day
+    data[data$Date == d, "Rate_Of_Change"] = rate_change
+  } 
+    
+  return(data) #return data
+}
+
+#Function used for calling so get the cummulative data, needed to remerge the data. needed if 
+get_cummulative <- function(data, cumm_column, p_d_column){
+  #get data for confirmed
+  data_c <- cummulative_to_per(data,cumm_column, p_d_column, "Confirmed")
+  #get data for recovered  
+  data_r <- cummulative_to_per(data,cumm_column, p_d_column, "Recovered")
+  #get data for deceased
+  data_d <- cummulative_to_per(data,cumm_column, p_d_column, "Deceased")
+  
+  #metge data back
+  data = combine_3(data_c, data_r, data_d)
+  
+  #return data
+  return (data)
+}
+
+
+#Function used for getting the totals for confirmed, recovered, deceased, and active.
+get_totals <- function(data){
+  countries = unique(data$Country)
+  data1 <- data.frame("Country" = "none", "Total" = 0, "Status" = "none", "Percent_Global" = 0.0, "keep"="n")
+
+  
+  for (country in countries){
+    confirmed <- max(data[data$Country == country & data$Status == "Confirmed","Value"])
+    recovered <- max(data[data$Country == country & data$Status == "Recovered","Value"])
+    deaths <- max(data[data$Country == country & data$Status == "Deceased","Value"])
+    active <- confirmed - recovered - deaths
+    
+    max_con = max(data[data$Country == "Global" & data$Status == "Confirmed", "Value"])
+    max_rec = max(data[data$Country == "Global" & data$Status == "Recovered", "Value"])
+    max_dea = max(data[data$Country == "Global" & data$Status == "Deceased", "Value"])
+    max_act = max_con - max_rec - max_dea
+     
+    #Creating new dataframes
+    x_c = data.frame( "Country"= country, "Total" = confirmed, "Status" = "Confirmed", "Percent_Global" = confirmed/max_con, "keep"="y")
+    x_r = data.frame( "Country"= country, "Total" = recovered, "Status" = "Recovered", "Percent_Global" = recovered/max_rec, "keep"="y")
+    x_d = data.frame( "Country"= country, "Total" = deaths, "Status" = "Deceased", "Percent_Global" = deaths/max_dea, "keep"="y")
+    #create a dataframe for active cases #confirmed - recovered - deaths
+    x_a = data.frame( "Country"= country, "Total" = active, "Status" = "Active", "Percent_Global" = active/max_act, "keep"="y")
+    
+    
+    #combining dataframes
+    data1 = rbind(data1,x_c)
+    data1 = rbind(data1,x_r)
+    data1 = rbind(data1,x_d)
+    data1 = rbind(data1,x_a)
+    
+  }
+  data1 = data1[data1$Country != "none", c("Country", "Total", "Status", "Percent_Global")]
+  return (data1) #sending dataframe back
+}
+```
+
+# Cleaning data
+
+Here I am doing a few things:
+1. I made a row for each status
+2. I got rid of all columns except Country, Status, Value, Date
+3. I added a new region called "Global", this holds all the values for every country combined
+4. I ran a short algorithm to get the per day change, aswell as the rate of change per day
+5. I got a dataframe of the totals for each Country and Status, aswell as add the active status for this dataframe
+
+What I need to do:
+1. Build algorithm to get real-time Active status
+2. Import data of testing
+
+You can see the functions I use in the above codeblock.
+
+```{r, echo = FALSE}
+#Reading in our  three datasets
+df_c <- read.csv("3-22-20-time_series-ncov-Confirmed.csv")
+df_r <- read.csv("3-22-20-time_series-ncov-Recovered.csv")
+df_d <- read.csv("3-22-20-time_series-ncov-Deaths.csv")
+
+#removing all values that are 0
+df_c <- df_c[df_c[,"Value"]!=0,]
+df_r <- df_r[df_r[,"Value"]!=0,]
+df_d <- df_d[df_d[,"Value"]!=0,]
+
+#Adding a status
+df_c$Status = "Confirmed"
+df_r$Status = "Recovered"
+df_d$Status = "Deceased"
+
+#adding new columns for use later
+df_c$Keep = "n"
+df_r$Keep = "n"
+df_d$Keep = "n"
+
+#getting rid of other columns
+df_c <- df_c[,c("Country.Region", "Status", "Value", "Date", "Keep")]
+df_r <- df_r[,c("Country.Region", "Status", "Value", "Date", "Keep")]
+df_d <- df_d[,c("Country.Region", "Status", "Value", "Date", "Keep")]
+
+#Change dates to strings
+df_c$Date = as.character(df_c$Date)
+df_r$Date = as.character(df_r$Date) 
+df_d$Date = as.character(df_d$Date)
+
+#Lets go ahead and grab a global dataset aswell
+global_c <- df_c
+global_r <- df_r
+global_d <- df_d
+
+global_c$Country.Region = "Global"
+global_r$Country.Region = "Global"
+global_d$Country.Region = "Global"
+
+global <- seperate_country("Global", global_c, global_r, global_d)
+
+global <- get_cummulative(global, "Value", "Per_Day")
+
+#Sepperating countries from all our dataframes, this will also combine all the dates for us
+data_us <- seperate_country("US", df_c, df_r, df_d)
+data_ch <- seperate_country("China", df_c, df_r, df_d)
+data_it <- seperate_country("Italy", df_c, df_r, df_d)
+data_ge <- seperate_country("Germany", df_c, df_r, df_d)
+data_ir <- seperate_country("Iran", df_c, df_r, df_d)
+data_fr <- seperate_country("France", df_c, df_r, df_d)
+
+#grabbing per day values
+data_us <- get_cummulative(data_us, "Value", "Per_Day")
+data_ch <- get_cummulative(data_ch, "Value", "Per_Day")
+data_it <- get_cummulative(data_it, "Value", "Per_Day")
+data_ge <- get_cummulative(data_ge, "Value", "Per_Day")
+data_ir <- get_cummulative(data_ir, "Value", "Per_Day")
+data_fr <- get_cummulative(data_fr, "Value", "Per_Day")
+
+#Combining all data into one big dataframe
+data1 <- combine_3(data_us, data_ch, data_it)
+data2 <- combine_3(data_ge, data_ir, data_fr)
+
+#Almost our final dataframe, including all values
+data <- rbind(data1, data2)
+data <- rbind(data, global)
+
+#Seperating our cleaned data into cases again
+data_c <- extract_status(data, "Confirmed")
+data_r <- extract_status(data, "Recovered")
+data_d <- extract_status(data, "Deceased")
+
+
+#Variable for deleting left over data variables
+to_delete <- c("data_ch", "data_it", "data_ge", "data_ir", "data_fr", "data1", "data2", "df_c", "df_r", "df_d", "global", "global_c", "global_d", "global_r", "to_delete")
+
+#removing old variables
+rm(list = to_delete)
+
+#Countries I want to compare
+countries <- c("China", "Italy", "US")
+
+#Get totals dataset
+totals <- get_totals(data)
+```
+
+```{r}
+head(data,2)
+```
+
+----------------------------------------------------
+FUNCTION ------------ PLEASE HELP
+
+Trying to get this function to take my data file, seperate by status, reverse order of dates, loop through dates backwards, get active cases value, and create a new row in my dataframe.
+
+Getting an error on line 308 for passing the date.
+
+```{r}
+
+```
+
+
+```{r}
+p <- ggplot(totals[totals$Country != "Global",], aes(reorder(Status, Total), Total, fill = Country))+
+  geom_bar(stat="identity")+ coord_flip()+ xlab("Status of Case")+ ylab("Total Cases")+ ggtitle("Number of Cases by Country")
+fig <- ggplotly(p)
+fig
+```
+
+The above graph shows the variance of cases by type, and by country. We can see some pretty interesting things here. For example, Italy has the highest deaths and active cases, yet they are only second in the number of confirmed cases. This could mean two things:
+1. Italy may not have been testing enough people, which would bring their death-rate up.
+2. Italys' healthcare system is getting overrun, and their deaths are about to skyrocket.
+
+```{r}
+a <- ggplot(data_c[data_c$Country == countries,], aes(Date, Value, color = Country))+
+  geom_line()+ geom_point(aes(size = Rate_Of_Change),show.legend = FALSE)+
+          scale_x_date(labels=date_format("%b/%d"), date_breaks = "1 week", date_minor_breaks = "1 day")+
+            xlab("") + ylab("Count")+
+                ggtitle("Timeline For Number of CONFIRMED Cases")
+figa <- ggplotly(a)
+figa
+```
+
+```{r}
+a <- ggplot(data_c[data_c$Country == countries,], aes(Date, Value, color = Country))+
+  geom_line()+ geom_point(aes(size = Rate_Of_Change),show.legend = FALSE)+
+          scale_x_date(labels=date_format("%b/%d"), date_breaks = "1 week", date_minor_breaks = "1 day")+
+            xlab("") + ylab("# of Cases")+
+                ggtitle("Timeline For Number of CONFIRMED Cases")
+figa <- ggplotly(a)
+
+b <- ggplot(data[data$Status == "Confirmed" & data$Country == countries,], aes(Date, Rate_Of_Change, color = Country))+
+  geom_point(aes(size = Value),show.legend = FALSE)+ scale_x_date(labels=date_format("%b/%d"), date_breaks = "1 week", date_minor_breaks = "1 day")+ geom_line()+
+    xlab("") + ylab("Growth Rate")+
+        ggtitle("The Rate of Change Per Day for CONFIRMED Cases")
+figb <- ggplotly(b)
+```
+
+```{r}
+figa
+figb
+```
+
+# Rates of Change
+For the above graphs, you can click on the Countries in the legend to select or de-select. Size of the dot correlates the the Total number of cases.
+
+There are two country matchup I want to look at:
+* US vs Italy
+* US vs China
+
+Theres a couple things to keep in mind when looking at the rate of change.
+1. It has more variance in the beginning.
+    * As the number of cases get larger, the rate will tend to even out
+    
+#    **$f(x) = P_0(1+r)^d$**
+   
+2. The rate is what gets exponentiated for an exponential function, ie.    
+    * This means that if our mean rate is higher, our confirmed cases will get exponentially higher with each day. Also, if the rate is negative that means we are starting to lose cases per day.
+    
+From the graphs we can see that Chinas' number of cases looks like its reached the peak. We might be seeing some negative growth rates in China soon, as its already close with 0.0006 (or 0.06%) change per day. This means that their number of confirmed cases have almost stalled!
+
+Looking at Italy we can see their current growth rate is trending around 0.12, their growth has significantly slowed, most likely due to the shut downs they have been doing. Comparing Italy to the US, we see that the US has over 2x the growth rate of Italy! It seems to be pretty steady around 0.25 (or 25%). This means if there are 1,000 confirmed cases to date then there will be roughly 250 new cases tomorrow. 
+
+```{r}
+c <- ggplot(data[data$Country=="Italy",], aes(Rate_Of_Change, color = Status, fill = Status))+ geom_density(alpha=0.4)+ ylab("Density")+
+  xlab("Rate of Change")+ 
+  ggtitle("Density of the Rate of Change for each Status")
+fig <- ggplotly(c)
+fig
+```
+
+This graph clearly shows that the deceased rate of change has not only a higher average, but most of the rates are higher than the rate of confirmed.
+
+This could be due to the fact that the Confirmed cases will always be lagging behind, or it could be due to the beginning of an overburdened healthcare system. It is also a possiblility that since our total Deaths are still low, we don't have enough data to get a good rate, and it is still in the beginning phase, where the rates tend to be higher.
+
+---------------------------------------------
+
+quickmath
+```{r}
+total_us_confirmed = max(data_c[data_c$Country== "US", "Value"])
+
+total_us_dead = max(data_d[data_d$Country== "US","Value"])
+
+total_us_dead/total_us_confirmed
+total_us_confirmed
+total_us_dead
+
+data[data$Country== "US" & data$Status == "Deceased","Value"]
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+-----------------------------------
+
+```{r}
+get_active <- function(data, country){
+  #delete extra columns for now, function would be callled before they are added
+  data = data[,c("Status","Value","Date","Country")]
+  
+  
+  #get status seperated(need to get efficient ordering)
+  data1 = extract_status(data, "Confirmed")
+  data2 = extract_status(data, "Recovered")
+  data3 = extract_status(data, "Deceased")
+  
+  #reverse order of dates
+  data1 = data1[rev(order(as.Date(data1$Date, format   = "%Y-%m-%d"))),]
+  data2 = data2[rev(order(as.Date(data2$Date, format   = "%Y-%m-%d"))),]
+  data3 = data3[rev(order(as.Date(data3$Date, format   = "%Y-%m-%d"))),]
+  
+  #loop through dates
+  for (d in data1$Date){
+      con = data1[data1$Date == d,"Value"] #confirmed
+      rec = data2[data2$Date == d,"Value"] #recovered
+      dea = data3[data3$Date == d,"Value"] #deceased
+      act = con - rec - dea
+      
+      print(d)
+      #trying to add a new row, date is throwing it off
+      data1 = rbind(data1, c("Active", act, as.Date.numeric(d,origin = "1970-01-01"), country))
+      
+  }
+  #reassign, should be deleting a few rows
+  data = data1
+  return(data)
+}
+#calling function
+active <- get_active(data_us,"US")
+```
+
+```{r}
+#Convert to pdf
+
+library("rmarkdown")
+render("Covid-19_Analysis.Rmd", "pdf_document")
+```
